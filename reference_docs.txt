@@ -1,0 +1,189 @@
+docker rm -f localstack
+
+docker run -d `
+  -p 4566:4566 `
+  -p 4510-4559:4510-4559 `
+  --name localstack `
+  localstack/localstack
+
+aws lambda get-function `
+    --function-name FileProcessingLambda `
+    --endpoint-url http://localhost:4566
+
+
+docker run -d `
+  --name localstack `
+  -p 4566:4566 `
+  -p 4510-4559:4510-4559 `
+  -e LAMBDA_EXECUTOR=docker `
+  -e DOCKER_HOST=unix:///var/run/docker.sock `
+  -v /var/run/docker.sock:/var/run/docker.sock `
+  localstack/localstack
+
+ aws logs tail /aws/lambda/FileProcessingLambda --follow --endpoint-url http://localhost:4566
+
+docker logs localstack-lambda-fileprocessinglambda-a2fcea6594091c0bb469a18bf67087d6 --tail 200
+
+docker network create localstack-net
+
+
+docker run -d `
+  --name localstack `
+  --network localstack-net `
+  -p 4566:4566 `
+  -p 4510-4559:4510-4559 `
+  -e SERVICES=lambda,s3,events `
+  -e LAMBDA_DOCKER_NETWORK=localstack-net `
+  -v /var/run/docker.sock:/var/run/docker.sock `
+  localstack/localstack
+
+
+
+
+✅ LOCALSTACK S3 → LAMBDA → S3 (JAVA) — DEBUGGED STEPS
+🔹 1. Create Docker network (one time)
+
+docker network create localstack-net
+
+docker network ls
+
+🔹 2. Start LocalStack (CRITICAL)
+
+docker run -d ^
+--name localstack ^
+--network localstack-net ^
+-p 4566:4566 ^
+-p 4510-4559:4510-4559 ^
+-e SERVICES=lambda,s3,events,logs ^
+-e LAMBDA_DOCKER_NETWORK=localstack-net ^
+-v /var/run/docker.sock:/var/run/docker.sock ^
+localstack/localstack
+
+🔹 3. Verify LocalStack network
+
+docker inspect localstack --format "{{json .NetworkSettings.Networks}}"
+
+✔ Must show: localstack-net
+
+🔹 4. Create S3 buckets
+
+aws s3 mb s3://source-bucket --endpoint-url http://localhost:4566
+
+aws s3 mb s3://dest-bucket --endpoint-url http://localhost:4566
+
+🔹 5. Verify buckets
+
+aws s3 ls --endpoint-url http://localhost:4566
+
+🔹 6. Build your fat JAR
+
+mvn clean package
+
+✔ Ensure jar exists in target/
+
+🔹 7. Create Lambda function
+
+aws lambda create-function ^
+--function-name FileProcessingLambda ^
+--runtime java21 ^
+--handler badri.com.lamda_funtion_file_processing.FileProcessingHandler::handleRequest ^
+--zip-file fileb://target/your-fat-jar.jar ^
+--role arn:aws:iam::000000000000:role/lambda-role ^
+--timeout 60 ^
+--memory-size 512 ^
+--endpoint-url http://localhost:4566
+
+🔹 8. Allow S3 to invoke Lambda
+
+aws lambda add-permission ^
+--function-name FileProcessingLambda ^
+--statement-id s3invoke ^
+--action lambda:InvokeFunction ^
+--principal s3.amazonaws.com ^
+--source-arn arn:aws:s3:::source-bucket ^
+--endpoint-url http://localhost:4566
+
+🔹 9. Configure S3 trigger (SAFE — no filter)
+
+aws s3api put-bucket-notification-configuration ^
+--bucket source-bucket ^
+--notification-configuration "{ "LambdaFunctionConfigurations": [ { "LambdaFunctionArn": "arn:aws:lambda:ap-south-1:000000000000:function:FileProcessingLambda", "Events": ["s3:ObjectCreated:*"] } ] }" ^
+--endpoint-url http://localhost:4566
+
+🔹 10. Verify trigger
+
+aws s3api get-bucket-notification-configuration ^
+--bucket source-bucket ^
+--endpoint-url http://localhost:4566
+
+✔ Must show LambdaFunctionConfigurations
+
+🔹 11. IMPORTANT — S3 client inside Lambda must be
+
+.endpointOverride(URI.create("http://localstack:4566
+"))
+
+✔ Do NOT use localhost
+✔ Do NOT use 172.x.x.x
+
+🔹 12. Upload test file
+
+obj.uploadSingleFile(
+"source-bucket",
+"badri.pdf",
+"C:\Users\HP\OneDrive\Desktop\zomato_sample.pdf"
+);
+
+🔹 13. Check running containers
+
+docker ps
+
+✔ Should show:
+
+localstack-lambda-fileprocessinglambda-xxxx
+
+🔹 14. View Lambda logs (MOST RELIABLE)
+
+docker logs <lambda-container-name> --tail 200
+
+🔹 15. Expected successful logs
+
+🔥 HANDLER ENTERED 🔥
+Records size: 1
+File downloaded successfully
+PDF encrypted successfully
+File uploaded to dest-bucket successfully
+
+🔹 16. Verify output bucket
+
+aws s3 ls s3://dest-bucket --endpoint-url http://localhost:4566
+
+✔ Should show: badri.pdf
+
+🚨 COMMON DEBUG CHECKS
+❌ UnknownHostException: localstack
+
+✔ Fix: shared Docker network
+✔ Fix: LAMBDA_DOCKER_NETWORK
+
+❌ Records size = 0
+
+✔ Check suffix
+✔ Remove filter while debugging
+✔ Verify notification config
+
+❌ Lambda not invoked
+
+✔ Check add-permission
+✔ Check bucket notification
+
+❌ Logs not visible
+
+✔ Use docker logs
+✔ Not only aws logs tail
+
+✅ FINAL STATUS CHECK
+
+If all correct:
+
+S3 upload → Lambda trigger → PDF encrypt → upload to dest bucket
